@@ -177,7 +177,8 @@ Optional:
   - Run PowerShell **as Administrator**:
     - `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`
     - `.\scripts\deploy_windows_vps.ps1`
-  - Note: requires `winget` (Windows 10/11 App Installer). If missing, install App Installer / update Windows, then re-run.
+  - **No winget required**: if `winget` is missing (common on Windows Server), the script downloads the official Python 3.11 installer from `python.org` and installs silently.
+  - **No Git required**: the script downloads the GitHub `main` branch as a ZIP.
 
 ---
 

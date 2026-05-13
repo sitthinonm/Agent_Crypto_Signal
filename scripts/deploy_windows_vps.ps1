@@ -4,8 +4,8 @@
 #   .\deploy_windows_vps.ps1
 #
 # What it does:
-# - Installs Python 3.11 + Git via winget (if missing)
-# - Downloads repo ZIP from GitHub (no manual git clone)
+# - Ensures Python 3.11 (winget if available, else silent installer from python.org)
+# - Downloads repo ZIP from GitHub (no git required)
 # - Creates venv, pip install, copies .env.example -> .env
 # - Opens Windows Firewall TCP 8080
 # - Registers a startup Scheduled Task to keep API running
@@ -31,23 +31,11 @@ $Port = 8080
 Write-Host "==> Preparing folders..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 
-Write-Host "==> Ensuring winget is available..." -ForegroundColor Cyan
-$winget = Get-Command winget -ErrorAction SilentlyContinue
-if (-not $winget) {
-    Write-Host "ERROR: winget not found. Install 'App Installer' from Microsoft Store, or use Windows 10/11 with updates, then re-run this script." -ForegroundColor Red
-    exit 1
+function Refresh-PathEnv {
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$machinePath;$userPath"
 }
-
-Write-Host "==> Installing Python 3.11 (if missing)..." -ForegroundColor Cyan
-winget install -e --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements
-
-Write-Host "==> Installing Git (if missing)..." -ForegroundColor Cyan
-winget install -e --id Git.Git --silent --accept-package-agreements --accept-source-agreements
-
-# Refresh PATH for this session (best-effort)
-$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$env:Path = "$machinePath;$userPath"
 
 function Resolve-PythonExe {
     $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
@@ -61,17 +49,68 @@ function Resolve-PythonExe {
 
     $common = @(
         "$env:LocalAppData\Programs\Python\Python311\python.exe",
-        "C:\Program Files\Python311\python.exe"
+        "C:\Program Files\Python311\python.exe",
+        "C:\Program Files (x86)\Python311-32\python.exe"
     )
     foreach ($p in $common) {
         if (Test-Path $p) { return $p }
     }
 
-    throw "Python not found after install. Reboot the VPS once, then re-run this script."
+    return $null
 }
 
-Write-Host "==> Resolving python.exe..." -ForegroundColor Cyan
-$pythonExe = Resolve-PythonExe
+function Ensure-Python311 {
+    Refresh-PathEnv
+    $existing = Resolve-PythonExe
+    if ($existing) {
+        Write-Host "==> Python already available: $existing" -ForegroundColor Green
+        return $existing
+    }
+
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-Host "==> Installing Python 3.11 via winget..." -ForegroundColor Cyan
+        winget install -e --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements
+        Refresh-PathEnv
+        $after = Resolve-PythonExe
+        if ($after) { return $after }
+    } else {
+        Write-Host "==> winget not found (common on Windows Server). Installing Python via python.org silent installer..." -ForegroundColor Yellow
+    }
+
+    $pyVer = "3.11.9"
+    $installerName = "python-$pyVer-amd64.exe"
+    $installerUrl = "https://www.python.org/ftp/python/$pyVer/$installerName"
+    $installerPath = Join-Path $env:TEMP $installerName
+
+    Write-Host "==> Downloading $installerUrl ..." -ForegroundColor Cyan
+    Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+
+    Write-Host "==> Running silent Python install (may take 1-3 minutes)..." -ForegroundColor Cyan
+    $args = @(
+        "/quiet",
+        "InstallAllUsers=1",
+        "PrependPath=1",
+        "Include_test=0",
+        "Include_doc=0",
+        "Include_launcher=1",
+        "Include_pip=1"
+    )
+    $proc = Start-Process -FilePath $installerPath -ArgumentList $args -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+        throw "Python installer exited with code $($proc.ExitCode). Try reboot VPS, then re-run this script."
+    }
+
+    Refresh-PathEnv
+    $final = Resolve-PythonExe
+    if (-not $final) {
+        throw "Python installed but not found in PATH yet. Reboot the VPS once, then re-run this script."
+    }
+    return $final
+}
+
+Write-Host "==> Ensuring Python 3.11..." -ForegroundColor Cyan
+$pythonExe = Ensure-Python311
 Write-Host "Using: $pythonExe" -ForegroundColor DarkGray
 
 Write-Host "==> Downloading project ZIP (no git required)..." -ForegroundColor Cyan
